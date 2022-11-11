@@ -1,0 +1,276 @@
+import netmiko
+from netmiko import SCPConn
+import os,sys,commands,re
+
+
+def check_md5(filename):
+    command = 'md5sum '+filename
+    o = commands.getoutput(command)
+    output = o.split(' ')
+    return output[0]
+
+def set_boot(net_connect,file):
+    net_connect.config_mode()
+    net_connect.send_command('boot system flash:{}'.format(file))
+    net_connect.exit_config_mode()
+    net_connect.send_command('wr')
+
+def reload(net_connect):
+    net_connect.send_command('reload',expect_string='')
+    net_connect.send_command('\n')
+
+def archive_run(net_connect,filename):
+    result = net_connect.send_command("show run")
+    # close SSH connection
+    net_connect.disconnect()
+    file = open(filename,"w")
+    file.write(result)
+    file.close()
+    
+def verify_md5(net_connect,file,md5):
+    result = net_connect.send_command("verify /md5 flash:{} {}".format(file,md5))
+    # close SSH connection
+    net_connect.disconnect()
+    reg = re.compile(r'Verified')
+    verify = reg.findall(result)
+    if verify:
+        result = True
+    else:
+        result = False
+    return result
+
+def verify_space(net_connect,file):
+    result = net_connect.send_command("show flash:")
+    # close SSH connection
+    net_connect.disconnect()
+    reg = re.compile(r'(\d+)\sbytes\sfree')
+    space = reg.findall(result)
+    reg = re.compile(r'.*-rwx.*({})'.format(file))
+    exist = reg.findall(result)
+    f_size = os.path.getsize(file)
+    if space >= f_size:
+        result = 'True'
+    if space < f_size:
+        result = 'False'
+    if exist:
+        exist = 'True'
+    else:
+        exist = 'False'
+    return result,exist
+
+def transfer_file(net_connect,file):
+    net_connect.config_mode()
+    net_connect.send_command('ip scp server enable')
+    scp_conn = SCPConn(net_connect)
+    s_file = file
+    d_file = file
+    scp_conn.scp_transfer_file(s_file, d_file)
+    
+
+if __name__ == "__main__":
+    if len(sys.argv) != 5:
+        print("\nplease provide the following arguments:")
+        print("\tupgrade_cisco.py <ip> <username> <password> <file>\n\n")
+        print("\tsample usage 1: upgrade_cisco.py 192.168.10.100 admin password cisco_ios_file.bin\n\n")
+        sys.exit(0)
+
+    ip = sys.argv[1]
+    username = sys.argv[2]
+    password = sys.argv[3]
+    file_s = sys.argv[4]
+ 
+    #verify if there is enough free space on device to upload ios file
+    net_connect = netmiko.ConnectHandler(device_type='cisco_ios', ip=ip, username=username, password=password)
+    ver = verify_space(net_connect,file_s)
+
+    print "\n\nVerifying sufficient space available on the file system ... %s\n\n" % ip
+
+    if ver[0] == 'True' and ver[1] == 'False':
+        upload = raw_input("\n\nSuccess! - proceed with image upload ? (y/n) ... ")
+        if upload == 'y':
+           print "\n\nUploading file : %s ...\n\n" % file_s
+
+           #transferring file to device
+           net_connect = netmiko.ConnectHandler(device_type='cisco_ios', ip=ip, username=username, password=password)
+           transfer_file(net_connect,file_s)
+           print "\n\nSuccess! - upload file: %s to device: %s was successfull ... \n\n" % (file_s,ip)
+
+           #veryfing md5
+           md5 = check_md5(file_s)
+           print "\n\nVerifying md5 checksum on device ... %s\n\n" % ip
+           net_connect = netmiko.ConnectHandler(device_type='cisco_ios', ip=ip, username=username, password=password)
+           v_md5 = verify_md5(net_connect, file_s,md5)
+           if v_md5 == True:
+                archive = raw_input("\n\nSuccess! - proceed with archive running config ? (y/n) ... ")
+                if archive == 'y':
+                        file_n = ip+"-running-config.txt"
+                        print "\n\nSaving running config into file: %s \n\n" % file_n
+                        net_connect = netmiko.ConnectHandler(device_type='cisco_ios', ip=ip, username=username, password=password)
+                        archive_run(net_connect,file_n)
+
+                boot = raw_input("\n\nSuccess! - proceed with inserting boot system command ? (y/n) ... ")
+                if boot == 'y':
+                        net_connect = netmiko.ConnectHandler(device_type='cisco_ios', ip=ip, username=username, password=password)
+                        set_boot(net_connect, file_s)
+
+                        reload_3 = raw_input("\n\nSuccess! - proceed with reload ? (y/n) ... ")
+                        if reload_3 == 'y':
+                           reload_2 = raw_input("\n\nAre you sure ? (Y\N) ... ")
+                           if reload_2 == 'Y':
+                              net_connect = netmiko.ConnectHandler(device_type='cisco_ios', ip=ip, username=username, password=password)
+                              try:
+                                 reload(net_connect)
+                              except:
+                                 print "Reloading ... "
+                           else:
+                              print "\n\nAbort !!!\n\n"
+                        else:
+                            print "\n\nAbort !!!\n\n"
+
+           else:
+                print "\n\nError veryfiing md5 checksum on device, quitting !!!\n\n"
+
+    elif ver[0] == 'False' and ver[1] == 'False':
+        print "\n\nNot enough free space on device ... %s \n\n" % ip
+
+    elif ver[1] == 'True':
+        print "\n\nFile already uploaded on device ... %s \n\n" % ip
+
+
+#!/usr/bin/python
+
+import netmiko
+from netmiko import SCPConn
+import os,sys,re,subprocess
+
+def check_md5(filename):
+command = 'md5sum '+filename
+o = subprocess.getoutput(command)
+output = o.split(' ')
+return output[0]
+
+def set_boot(net_connect,file):
+net_connect.config_mode()
+net_connect.send_command('boot system flash:{}'.format(file))
+net_connect.exit_config_mode()
+net_connect.send_command('wr')
+
+def reload(net_connect):
+net_connect.send_command('reload',expect_string='')
+net_connect.send_command('\n')
+
+def archive_run(net_connect,filename):
+result = net_connect.send_command("show run")
+# close SSH connection
+net_connect.disconnect()
+file = open(filename,"w")
+file.write(result)
+file.close()
+
+def verify_md5(net_connect,file,md5):
+result = net_connect.send_command("verify /md5 flash:{} {}".format(file,md5))
+# close SSH connection
+net_connect.disconnect()
+reg = re.compile(r'Verified')
+verify = reg.findall(result)
+if verify:
+result = True
+else:
+result = False
+return result
+
+def verify_space(net_connect,file):
+result = net_connect.send_command("show flash:")
+# close SSH connection
+net_connect.disconnect()
+reg = re.compile(r'(\d+)\sbytes\sfree')
+space = reg.findall(result)
+reg = re.compile(r'.-rwx.({})'.format(file))
+exist = reg.findall(result)
+f_size = os.path.getsize(file)
+if space >= f_size:
+result = 'True'
+if space < f_size:
+result = 'False'
+if exist:
+exist = 'True'
+else:
+exist = 'False'
+return result,exist
+
+def transfer_file(net_connect,file):
+net_connect.config_mode()
+net_connect.send_command('ip scp server enable')
+scp_conn = SCPConn(net_connect)
+s_file = file
+d_file = file
+scp_conn.scp_transfer_file(s_file, d_file)
+
+if name == "main":
+if len(sys.argv) != 5:
+print("\nplease provide the following arguments:")
+print("\tupgrade_cisco.py \n\n")
+print("\tsample usage 1: upgrade_cisco.py 192.168.10.100 admin password cisco_ios_file.bin\n\n")
+sys.exit(0)
+
+ip = sys.argv[1]
+username = sys.argv[2]
+password = sys.argv[3]
+file_s = sys.argv[4]
+
+#verify if there is enough free space on device to upload ios file
+net_connect = netmiko.ConnectHandler(device_type='cisco_ios', ip=ip, username=username, password=password)
+ver = verify_space(net_connect,file_s)
+
+print ("\n\nVerifying sufficient space available on the file system ... %s\n\n" % ip)
+
+if ver[0] == 'True' and ver[1] == 'False':
+    upload = input("\n\nSuccess! - proceed with image upload ? (y/n) ... ")
+    if upload == 'y':
+       print ("\n\nUploading file : %s ...\n\n" % file_s)
+
+       #transferring file to device
+       net_connect = netmiko.ConnectHandler(device_type='cisco_ios', ip=ip, username=username, password=password)
+       transfer_file(net_connect,file_s)
+       print ("\n\nSuccess! - upload file: %s to device: %s was successfull ... \n\n" % (file_s,ip))
+
+       #veryfing md5
+       md5 = check_md5(file_s)
+       print ("\n\nVerifying md5 checksum on device ... %s\n\n" % ip)
+       net_connect = netmiko.ConnectHandler(device_type='cisco_ios', ip=ip, username=username, password=password)
+       v_md5 = verify_md5(net_connect, file_s,md5)
+       if v_md5 == True:
+            archive = raw_input("\n\nSuccess! - proceed with archive running config ? (y/n) ... ")
+            if archive == 'y':
+                    file_n = ip+"-running-config.txt"
+                    print ("\n\nSaving running config into file: %s \n\n" % file_n)
+                    net_connect = netmiko.ConnectHandler(device_type='cisco_ios', ip=ip, username=username, password=password)
+                    archive_run(net_connect,file_n)
+
+            boot = input("\n\nSuccess! - proceed with inserting boot system command ? (y/n) ... ")
+            if boot == 'y':
+                    net_connect = netmiko.ConnectHandler(device_type='cisco_ios', ip=ip, username=username, password=password)
+                    set_boot(net_connect, file_s)
+
+                    reload_3 =input("\n\nSuccess! - proceed with reload ? (y/n) ... ")
+                    if reload_3 == 'y':
+                       reload_2 =input("\n\nAre you sure ? (Y/N) ... ")
+                       if reload_2 == 'Y':
+                          net_connect = netmiko.ConnectHandler(device_type='cisco_ios', ip=ip, username=username, password=password)
+                          try:
+                             reload(net_connect)
+                          except:
+                             print ("Reloading ... ")
+                       else:
+                          print ("\n\nAbort !!!\n\n")
+                    else:
+                        print ("\n\nAbort !!!\n\n")
+
+       else:
+            print ("\n\nError veryfiing md5 checksum on device, quitting !!!\n\n")
+
+elif ver[0] == 'False' and ver[1] == 'False':
+   print ("\n\nNot enough free space on device ... %s \n\n" % ip)
+
+elif ver[1] == 'True':
+    print ("\n\nFile already uploaded on device ... %s \n\n" % ip)
